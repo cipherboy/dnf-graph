@@ -1,6 +1,8 @@
 import dnf
 import hawkey
 
+from collections import defaultdict
+
 repos = {
     'rawhide': 'https://mirrors.fedoraproject.org/metalink?repo=rawhide&arch=$basearch',
     'rawhide-source': 'https://mirrors.fedoraproject.org/metalink?repo=rawhide-source&arch=$basearch',
@@ -37,8 +39,19 @@ for repoid in repos:
 
 base.fill_sack(load_system_repo=False)
 
-if 'rawhide-modular' not in repos:
-    base.sack.set_module_excludes([])
+base.sack.set_module_excludes([])
+
+src_subpkg_map = defaultdict(set)
+pkg_count = 0
+
+for pkg in base.sack.query().run():
+    if pkg.arch == 'src':
+        continue
+
+    pkg_count += 1
+    src_subpkg_map[pkg.sourcerpm].add(pkg)
+
+print(len(src_subpkg_map), pkg_count)
 
 def get_pkg(base, package, arches=('x86_64', 'noarch'), repo_names=repos.keys()):
     """
@@ -115,6 +128,10 @@ def get_build_requires(base, package):
 
     return result
 
+def get_subpkgs(base, package):
+    pkg = get_source_pkg(base, package)
+    return src_subpkg_map[str(pkg) + ".rpm"]
+
 def get_all_requires(base, package, depth=10):
     pkg = get_pkg(base, package)
     src_pkg = get_source_pkg(base, package)
@@ -136,3 +153,34 @@ def get_all_requires(base, package, depth=10):
         recent = next_recent
 
     return result
+
+def build_graph(base):
+    obj = {}
+    for src_pkg in src_subpkg_map:
+        obj[src_pkg] = {}
+        for pkg in src_subpkg_map[src_pkg]:
+            obj[src_pkg][pkg] = {}
+            obj[pkg.sourcerpm][pkg]['requires'] = set()
+            obj[pkg.sourcerpm][pkg]['build_requires'] = set()
+
+            for req in get_requires(base, pkg):
+                obj[pkg.sourcerpm][pkg]['requires'].add(req)
+            for req in get_build_requires(base, pkg):
+                obj[pkg.sourcerpm][pkg]['build_requires'].add(req)
+
+    return obj
+
+def str_graph(obj):
+    if isinstance(obj, (list, tuple, set)):
+        result = []
+        for item in obj:
+            result.append(str_graph(item))
+        return result
+    if isinstance(obj, (dict, defaultdict)):
+        result = {}
+        for key in obj:
+            result[str(key)] = str_graph(obj[key])
+        return result
+    if isinstance(obj, (int, str, bool, float, type(None))):
+        return obj
+    return str(obj)
